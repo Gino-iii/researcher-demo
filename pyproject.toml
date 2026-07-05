@@ -1,0 +1,31 @@
+[project]
+name = "mini-researcher"
+version = "0.1.0"
+description = "学习性复刻 gpt-researcher 的简版实现（OpenAI 兼容 + Tavily + 无 LangChain）"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    # M0 只需前两个；其余在对应里程碑再逐步启用
+    "python-dotenv>=1.0",   # M0：读取 .env
+    "openai>=1.30",         # M1：LLM 轻量层（chat / embedding，走兼容接口）
+    "json-repair>=0.25",    # M1：修复 LLM 返回的脏 JSON
+    "httpx>=0.27",          # M2/M3：异步搜索与抓取
+    "tavily-python>=0.5",   # M2：Tavily 检索器
+    "beautifulsoup4>=4.12", # M3：正文提取
+    "lxml>=5.0",            # M3：bs4 的解析后端
+]
+
+[project.optional-dependencies]
+# M8 才需要，避免早期把依赖搞重
+web = [
+    "fastapi>=0.110",
+    "uvicorn>=0.29",
+    "websockets>=12.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["mini_researcher"]

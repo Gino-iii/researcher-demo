@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>简版 GPT-Researcher 实施计划</title>
+<style>
+  :root {
+    --bg: #f6f8fa; --panel: #ffffff; --border: #d0d7de;
+    --fg: #1f2328; --muted: #57606a; --accent: #0969da;
+    --accent2: #1a7f37; --warn: #bc4c00; --code-bg: #eff1f3;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    line-height: 1.7; font-size: 15px;
+  }
+  .wrap { max-width: 960px; margin: 0 auto; padding: 40px 24px 120px; }
+  h1 { font-size: 30px; border-bottom: 2px solid var(--accent); padding-bottom: 14px; margin-top: 0; }
+  h2 { font-size: 23px; margin-top: 48px; color: var(--accent); border-bottom: 1px solid var(--border); padding-bottom: 8px; }
+  h3 { font-size: 18px; margin-top: 32px; color: var(--accent2); }
+  h4 { font-size: 15px; margin-top: 20px; color: var(--fg); }
+  code { background: var(--code-bg); padding: 2px 6px; border-radius: 4px; font-family: "SF Mono", Menlo, Consolas, monospace; font-size: 13px; color: #953800; }
+  pre { background: var(--code-bg); border: 1px solid var(--border); border-radius: 8px; padding: 16px; overflow-x: auto; }
+  pre code { background: none; padding: 0; color: var(--fg); }
+  table { border-collapse: collapse; width: 100%; margin: 16px 0; font-size: 14px; }
+  th, td { border: 1px solid var(--border); padding: 8px 12px; text-align: left; vertical-align: top; }
+  th { background: var(--panel); color: var(--accent); }
+  tr:nth-child(even) { background: rgba(0,0,0,0.02); }
+  a { color: var(--accent); }
+  blockquote { border-left: 3px solid var(--warn); margin: 12px 0; padding: 4px 16px; background: rgba(188,76,0,0.06); color: var(--muted); }
+  .pit { color: var(--warn); font-weight: 600; }
+  .milestone { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 4px 24px 20px; margin: 24px 0; }
+  .milestone h3 { margin-top: 20px; }
+  ul, ol { padding-left: 24px; }
+  li { margin: 6px 0; }
+  .tag { display: inline-block; background: var(--accent); color: #ffffff; font-size: 12px; font-weight: 700; padding: 2px 8px; border-radius: 4px; vertical-align: middle; margin-left: 8px; }
+  .toc { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 16px 24px; margin: 24px 0; }
+  .toc ul { list-style: none; padding-left: 0; }
+  .toc li { margin: 4px 0; }
+  hr { border: none; border-top: 1px solid var(--border); margin: 40px 0; }
+</style>
+</head>
+<body>
+<div class="wrap">
+<h1>简版 GPT-Researcher 实施计划</h1>
+<p style="color:var(--muted)">学习目标：在 <code>researcher-demo/</code> 从零复刻 <code>gpt-researcher</code> 主链路 · 技术选型：OpenAI 兼容接口 + Tavily + CLI/Web + 无 LangChain</p>
+
+<div class="toc">
+<strong>目录</strong>
+<ul>
+  <li>零、先理解你要复刻的是什么</li>
+  <li>一、目标结构（脚手架）</li>
+  <li>二、里程碑拆解（M0 – M9）</li>
+  <li>三、通用注意事项</li>
+  <li>四、时间预估</li>
+</ul>
+</div>
+
+<h2>零、先理解你要复刻的是什么</h2>
+<p>原项目跑一次研究的完整链路（这是整个简版的骨架，建议先对照源码走读一遍）：</p>
+<pre><code>用户 query
+  │
+  ├─ ① choose_agent        用 LLM 给研究员定"角色人设"（可选功能）
+  ├─ ② plan_research       先做一次初步搜索 → 让 LLM 基于搜索结果生成 3~5 个子查询
+  │
+  ├─ ③ 对每个子查询并发执行：
+  │      搜索(retriever) → URL 去重(visited_urls) → 并发抓取(scraper)
+  │      → 上下文压缩(embedding 相似度过滤，只留相关段落)
+  │
+  ├─ ④ 汇总所有子查询的 context
+  └─ ⑤ write_report        把 context + 报告 prompt 喂给 SMART_LLM，流式生成 Markdown 报告</code></pre>
+<p>对应源码入口：<code>GPTResearcher.conduct_research()</code> 在 <code>gpt_researcher/agent.py:371</code>，真正的循环在 <code>gpt_researcher/skills/researcher.py:95</code>（"整个项目的心脏"），写报告在 <code>agent.py:522</code> → <code>skills/writer.py:49</code>。</p>
+<blockquote><strong>简版的取舍原则</strong>：只保留上面这条主链路。原项目里的 MCP、多检索器聚合、deep_research、multi_agents（LangGraph）、向量库、本地文档、图片生成，全部第一版不做，留作后期 DIY。</blockquote>
+
+<h2>一、目标结构（脚手架）</h2>
+<pre><code>researcher-demo/
+├── pyproject.toml            # uv/pip 均可；依赖见下
+├── .env.example              # OPENAI_API_KEY / OPENAI_BASE_URL / TAVILY_API_KEY / 模型名
+├── README.md
+├── mini_researcher/
+│   ├── __init__.py
+│   ├── config.py             # 对应 gpt_researcher/config/
+│   ├── llm.py                # 对应 gpt_researcher/utils/llm.py + llm_provider/
+│   ├── prompts.py            # 对应 gpt_researcher/prompts.py（只抄 4 个 prompt）
+│   ├── retrievers.py         # 对应 gpt_researcher/retrievers/tavily/
+│   ├── scraper.py            # 对应 gpt_researcher/scraper/
+│   ├── context.py            # 对应 context/compression.py + skills/context_manager.py
+│   ├── researcher.py         # 对应 skills/researcher.py（研究循环）
+│   ├── writer.py             # 对应 skills/writer.py + actions/report_generation.py
+│   └── agent.py              # 对应 gpt_researcher/agent.py（薄编排层）
+├── cli.py                    # 对应根目录 cli.py / main.py
+├── server/
+│   ├── app.py                # 对应 backend/server/app.py + websocket_manager.py
+│   └── static/index.html     # 对应 frontend/static/
+└── tests/                    # 每个里程碑一个冒烟测试脚本</code></pre>
+<p><strong>依赖清单</strong>（有意精简）：<code>openai</code>、<code>tavily-python</code>（或直接 httpx 调 REST）、<code>httpx</code>、<code>beautifulsoup4</code> + <code>lxml</code>、<code>python-dotenv</code>、<code>fastapi</code> + <code>uvicorn</code> + <code>websockets</code>（M8 才装）、<code>json-repair</code>（强烈建议）。</p>
+
+<h2>二、里程碑拆解</h2>
+<p>每一步都给出：做什么 → 参考源码 → 验收标准 → 坑。<strong>严格按顺序做，每步验收通过再进下一步。</strong></p>
+
+<div class="milestone">
+<h3>M0：脚手架 + 配置层 <span class="tag">半天</span></h3>
+<p>建目录、<code>pyproject.toml</code>、<code>.env.example</code>。写 <code>config.py</code>：一个 dataclass，从环境变量读配置，字段抄原项目默认配置里用得到的十来个：<code>FAST_LLM</code>、<code>SMART_LLM</code>、<code>TEMPERATURE</code>、<code>MAX_SEARCH_RESULTS_PER_QUERY=5</code>、<code>MAX_ITERATIONS=3</code>（子查询数）、<code>TOTAL_WORDS=1200</code>、<code>BROWSE_CHUNK_MAX_LENGTH=8192</code>、<code>SIMILARITY_THRESHOLD=0.42</code>、<code>USER_AGENT</code>、<code>LANGUAGE</code>。</p>
+<ul>
+<li><strong>参考</strong>：<code>gpt_researcher/config/variables/default.py:3</code>、<code>gpt_researcher/config/config.py</code></li>
+<li><strong>注意</strong>：FAST/SMART 双模型的区分要保留——这是控制成本的核心，生成子查询/摘要用便宜的 FAST_LLM，写报告用 SMART_LLM。</li>
+</ul>
+<p><span class="pit">验收</span>：<code>python -c "from mini_researcher.config import Config; print(Config())"</code> 能打印从 .env 读到的配置。</p>
+</div>
+
+<div class="milestone">
+<h3>M1：LLM 轻量层 <span class="tag">半天</span></h3>
+<p><code>llm.py</code> 写两个函数：<code>chat(messages, model, temperature, stream, on_chunk)</code> 和 <code>chat_json(messages, model)</code>（在 chat 之上加 JSON 解析 + 修复重试）。</p>
+<ul>
+<li><strong>参考</strong>：<code>gpt_researcher/utils/llm.py</code>、<code>gpt_researcher/llm_provider/generic/base.py</code></li>
+<li><span class="pit">坑 1</span>：OpenAI 兼容接口兼容度参差——有些不支持 <code>response_format=json_object</code>，流式 chunk 的 <code>delta.content</code> 可能是 None。<code>chat_json</code> 别依赖 response_format，靠 prompt 约定 + 解析兜底。</li>
+<li><span class="pit">坑 2</span>：LLM 返回 JSON 常带 ```json 围栏、尾逗号、单引号。原项目三层防御见 <code>agent_creator.py:71</code>（handle_json_error）和 <code>:115</code>（extract_json_with_regex）。至少要有"剥围栏 + json_repair"两层。</li>
+</ul>
+<p><span class="pit">验收</span>：<code>chat_json</code> 稳定拿到 dict；流式模式逐 token 打印。</p>
+</div>
+
+<div class="milestone">
+<h3>M2：Tavily 检索器 <span class="tag">半天</span></h3>
+<p><code>retrievers.py</code>：<code>class TavilyRetriever</code> 带 <code>search(query, max_results) -&gt; list[{"href","body"}]</code>。返回结构跟原项目对齐。</p>
+<ul>
+<li><strong>参考</strong>：<code>gpt_researcher/retrievers/tavily/tavily_search.py</code>、接口约定 <code>retrievers/utils.py</code></li>
+<li>顺手定义"检索器基类"（哪怕只有一个实现），这层抽象是原项目能塞进 18 个搜索引擎的原因。</li>
+<li><span class="pit">坑 3</span>：Tavily 免费档 1000 次/月，一次研究 ≈ 5-6 次调用。加磁盘缓存（query 哈希 → JSON 文件），开发期省 90% 配额。</li>
+</ul>
+<p><span class="pit">验收</span>：<code>search("量子计算 2025 进展")</code> 返回 5 条带 URL 和摘要的结果。</p>
+</div>
+
+<div class="milestone">
+<h3>M3：抓取器 <span class="tag">1 天 · 坑最多</span></h3>
+<p><code>scraper.py</code>：<code>scrape_urls(urls) -&gt; list[{"url","raw_content"}]</code>。httpx 异步并发（信号量限 10）+ BeautifulSoup 提正文。</p>
+<ul>
+<li><strong>参考</strong>：<code>scraper/beautiful_soup/beautiful_soup.py</code>、<code>scraper/scraper.py</code>、并发管理 <code>skills/browser.py:36</code></li>
+<li><span class="pit">坑 4</span>：必须处理超时（10s 硬超时）、非 HTML content-type（PDF/图片跳过）、编码错误（信 httpx 探测）、反爬 403（带 USER_AGENT，失败即丢弃，别死磕重试）。</li>
+<li><span class="pit">坑 5</span>：正文可能几十万字符，按 <code>BROWSE_CHUNK_MAX_LENGTH</code> 截断，否则 M5 撑爆上下文。</li>
+</ul>
+<p><span class="pit">验收</span>：给 5 个混合 URL（含 404、超慢站），15 秒内返回，失败的被静默过滤。</p>
+</div>
+
+<div class="milestone">
+<h3>M4：Prompts <span class="tag">半天</span></h3>
+<p>只需 4 个 prompt，从原项目抄骨架再汉化/简化：</p>
+<table>
+<tr><th>你的函数</th><th>抄自 prompts.py</th><th>用途</th></tr>
+<tr><td>search_queries_prompt</td><td>:209 generate_search_queries_prompt</td><td>query + 初搜结果 → N 个子查询</td></tr>
+<tr><td>report_prompt</td><td>:254 generate_report_prompt</td><td>context → 最终报告</td></tr>
+<tr><td>summary_prompt</td><td>:510 generate_summary_prompt</td><td>单页内容 → 相关摘要（M6 备用）</td></tr>
+<tr><td>auto_agent_prompt</td><td>:482 auto_agent_instructions</td><td>定研究员角色（可选）</td></tr>
+</table>
+<ul>
+<li><span class="pit">坑 6</span>：<code>generate_report_prompt</code> 里几处关键指令删了质量立掉：<strong>当前日期注入</strong>、<strong>最少字数</strong>（TOTAL_WORDS）、<strong>必须内联引用 URL</strong>、<strong>"基于给定信息尽力回答"</strong>。汉化时保留语义。</li>
+<li><span class="pit">坑 7</span>：中文报告别全文翻译 prompt，用 prompt 主体英文 + 一句 "written in {language}"，多数模型更稳。</li>
+</ul>
+</div>
+
+<div class="milestone">
+<h3>M5：研究循环 <span class="tag">1-2 天 · 核心</span></h3>
+<pre><code>async def conduct_research(query) -&gt; list[str]:
+    initial = retriever.search(query)
+    sub_queries = await plan_sub_queries(query, initial)   # 含原 query 本身
+    contexts = await asyncio.gather(*[process(sq) for sq in sub_queries])
+    return flatten(contexts)
+
+async def process(sub_query):
+    results = retriever.search(sub_query)
+    new_urls = self._dedupe(results)          # 全局 visited_urls 去重
+    pages = await scrape_urls(new_urls)
+    return await compress(sub_query, pages)</code></pre>
+<ul>
+<li><strong>参考</strong>（逐行对照读）：<code>skills/researcher.py:95</code>（conduct_research）、<code>:311</code>（_get_context_by_web_search，asyncio.gather 并发）、<code>:519</code>（_process_sub_query）、<code>:851</code>（_get_new_urls 去重）、<code>:930</code>（_scrape_data_by_urls）；子查询生成 <code>query_processing.py:37</code> 和 <code>:112</code>（把初搜结果塞进 prompt，值得保留）</li>
+<li><span class="pit">坑 8</span>：<code>visited_urls</code> 集合被并发协程读写。单线程 event loop 下 set 安全，但"检查+添加"要在同一同步块完成，别 await 穿插。</li>
+<li><span class="pit">坑 9</span>：某子查询整体失败时返回空列表继续，别抛异常终止全局。</li>
+<li>用 <code>on_event: Callable</code> 回调贯穿全流程（比原项目一路透传 websocket 更干净），M8 换成 WebSocket 推送。</li>
+</ul>
+<p><span class="pit">验收</span>：日志能看到"生成 N 个子查询 → 每个搜 M 条 → 抓取成功 K 页"，最终拿到非空 context 列表。</p>
+</div>
+
+<div class="milestone">
+<h3>M6：上下文压缩 <span class="tag">1 天 · 可先丐版</span></h3>
+<p>网页切 chunk → 算 embedding → 只保留与 sub_query 余弦相似度 &gt; 0.42 的 chunk，取 top-k。</p>
+<ul>
+<li><strong>丐版（先跑通）</strong>：每页截前 N 字符，总量控制在 SMART_LLM 上下文的 60%。</li>
+<li><strong>正式版</strong>：<code>llm.py</code> 加 <code>embed(texts)</code>，<code>context.py</code> 切 chunk（1000 字符 + 100 重叠）、算余弦、过阈值排序取 top。numpy 甚至纯 Python 足够，不需要向量库。</li>
+<li><strong>参考</strong>：<code>context/compression.py</code>、<code>skills/context_manager.py:36</code>、<code>memory/embeddings.py</code></li>
+<li><span class="pit">坑 10（选型相关）</span>：<strong>DeepSeek 没有 embedding 端点</strong>，Qwen/智谱/SiliconFlow 有。写码前确认提供商；没有就：另配 embedding base_url / 用 LLM 摘要代替 / 永久停丐版。config 里把 embedding 的 base_url/key 与 chat 分开配置。</li>
+</ul>
+<p><span class="pit">验收</span>：压缩后 context 降到原来 10-30%，保留段落确实与子查询相关。</p>
+</div>
+
+<div class="milestone">
+<h3>M7：报告生成 + CLI <span class="tag">1 天 · 首个可用版</span></h3>
+<p><code>writer.py</code>：context 拼进 <code>report_prompt</code>，SMART_LLM 流式生成，<code>on_chunk</code> 逐字打印。<code>agent.py</code>：<code>MiniResearcher</code> 串起 M2-M7，公开 <code>conduct_research()</code> 和 <code>write_report()</code>。<code>cli.py</code>：argparse 收 query，存 <code>outputs/{时间戳}.md</code>。</p>
+<ul>
+<li><strong>参考</strong>：<code>report_generation.py:219</code>（generate_report，超长 context 截断兜底）、<code>skills/writer.py:49</code>、根目录 <code>cli.py</code> / <code>main.py</code></li>
+<li><span class="pit">坑 11</span>：context 拼接后仍可能超限，抄"超限就砍 context 重试"的兜底。</li>
+</ul>
+<p><span class="pit">里程碑验收</span>：<code>python cli.py "2025年固态电池商业化进展"</code> 3-5 分钟产出 1000+ 字、带 URL 引用的中文 Markdown 报告。到这里核心复刻完成。</p>
+</div>
+
+<div class="milestone">
+<h3>M8：FastAPI + WebSocket + 极简前端 <span class="tag">1-2 天</span></h3>
+<ul>
+<li><code>server/app.py</code>：<code>/ws</code> 端点，收 <code>{"query":...}</code> 跑研究，<code>on_event</code> 接到 <code>websocket.send_json</code>，事件分 <code>logs</code>（过程）和 <code>report</code>（报告增量）两类。</li>
+<li><code>static/index.html</code>：输入框 + 日志区 + 报告区（marked.js 渲染），原生 JS 连 WebSocket。</li>
+<li><strong>参考</strong>：<code>backend/server/app.py</code>、<code>websocket_manager.py</code>（消息类型约定）、<code>frontend/static/</code></li>
+<li><span class="pit">坑 12</span>：研究 3-5 分钟，WebSocket 可能被闲时断开——靠持续 logs 保活；客户端断开要 <code>Task.cancel</code> 取消研究任务，否则留僵尸任务烧配额。</li>
+</ul>
+<p><span class="pit">验收</span>：浏览器输入 query，实时看到日志滚动、报告逐字生成。</p>
+</div>
+
+<div class="milestone">
+<h3>M9+：DIY 储备清单 <span class="tag">按兴趣挑</span></h3>
+<table>
+<tr><th>功能</th><th>参考源码</th><th>学习价值</th></tr>
+<tr><td>choose_agent 动态角色</td><td>actions/agent_creator.py:19</td><td>prompt 工程 + JSON 容错</td></tr>
+<tr><td>多检索器（DuckDuckGo）</td><td>retrievers/duckduckgo/</td><td>插件化抽象</td></tr>
+<tr><td>来源可信度筛选 curator</td><td>skills/curator.py:33</td><td>LLM 当评审</td></tr>
+<tr><td>成本追踪</td><td>utils/costs.py</td><td>生产必备</td></tr>
+<tr><td>detailed_report 长报告</td><td>backend/report_type/、prompts.py:565</td><td>递归 agent 编排</td></tr>
+<tr><td>deep research 树状深挖</td><td>skills/deep_research.py</td><td>广度/深度递归</td></tr>
+<tr><td>本地文档 RAG</td><td>document/</td><td>向量检索</td></tr>
+</table>
+</div>
+
+<h2>三、通用注意事项</h2>
+<ol>
+<li><strong>全程 async</strong>。从 agent 到 scraper 全 async，否则并发抓取和流式输出都做不了。网络 IO 必须 async。</li>
+<li><strong>调试期控制成本</strong>：搜索缓存 + 子查询数临时调成 2 + FAST_LLM 用最便宜模型。一次全流程 ≈ 10-20 次 LLM 调用。</li>
+<li><strong>每层独立可测</strong>：M1-M6 每层写一个 <code>tests/</code> 冒烟脚本，出问题能单独定位。</li>
+<li>原项目 <code>actions/</code> 是无状态纯函数、<code>skills/</code> 是持有 researcher 引用的有状态类；简版可简化成模块函数 + 一个编排类。</li>
+</ol>
+
+<h2>四、时间预估</h2>
+<p>M0-M4 约 2-3 天，M5-M7 约 3-4 天（难点在 M5、M6），M8 约 1-2 天。<strong>总计 1.5-2 周</strong>业余时间到完整可用。</p>
+
+<hr>
+<p style="color:var(--muted);font-size:13px">生成于 2026-07-05 · 学习性复刻，非生产用途</p>
+</div>
+</body>
+</html>

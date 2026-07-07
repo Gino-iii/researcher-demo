@@ -117,13 +117,14 @@
 <li><strong>参考</strong>：<code>gpt_researcher/utils/llm.py</code>、<code>gpt_researcher/llm_provider/generic/base.py</code></li>
 <li><span class="pit">坑 1</span>：OpenAI 兼容接口兼容度参差——有些不支持 <code>response_format=json_object</code>，流式 chunk 的 <code>delta.content</code> 可能是 None。<code>chat_json</code> 别依赖 response_format，靠 prompt 约定 + 解析兜底。</li>
 <li><span class="pit">坑 2</span>：LLM 返回 JSON 常带 ```json 围栏、尾逗号、单引号。原项目三层防御见 <code>agent_creator.py:71</code>（handle_json_error）和 <code>:115</code>（extract_json_with_regex）。至少要有"剥围栏 + json_repair"两层。</li>
+<li><strong>顺手加成本追踪</strong>：响应里的 <code>usage</code> 字段是现成的，加一个模块级 token 累加器（十来行代码），从第一次调用起就看得见每轮研究烧多少 token（对应原项目 <code>utils/costs.py</code>，不必等到 M9）。</li>
 </ul>
 <p><span class="pit">验收</span>：<code>chat_json</code> 稳定拿到 dict；流式模式逐 token 打印。</p>
 </div>
 
 <div class="milestone">
 <h3>M2：Tavily 检索器 <span class="tag">半天</span></h3>
-<p><code>retrievers.py</code>：<code>class TavilyRetriever</code> 带 <code>search(query, max_results) -&gt; list[{"href","body"}]</code>。返回结构跟原项目对齐。</p>
+<p><code>retrievers.py</code>：<code>class TavilyRetriever</code> 带 <code>async def search(query, max_results) -&gt; list[{"href","body"}]</code>。用 <code>httpx.AsyncClient</code> 直接调 Tavily REST——<strong>别用同步 SDK</strong>，否则在 event loop 里阻塞，M5 的 <code>asyncio.gather</code> 并发名存实亡；顺便少一个依赖，和 M3 技术栈统一。返回结构跟原项目对齐。</p>
 <ul>
 <li><strong>参考</strong>：<code>gpt_researcher/retrievers/tavily/tavily_search.py</code>、接口约定 <code>retrievers/utils.py</code></li>
 <li>顺手定义"检索器基类"（哪怕只有一个实现），这层抽象是原项目能塞进 18 个搜索引擎的原因。</li>
@@ -139,6 +140,7 @@
 <li><strong>参考</strong>：<code>scraper/beautiful_soup/beautiful_soup.py</code>、<code>scraper/scraper.py</code>、并发管理 <code>skills/browser.py:36</code></li>
 <li><span class="pit">坑 4</span>：必须处理超时（10s 硬超时）、非 HTML content-type（PDF/图片跳过）、编码错误（信 httpx 探测）、反爬 403（带 USER_AGENT，失败即丢弃，别死磕重试）。</li>
 <li><span class="pit">坑 5</span>：正文可能几十万字符，按 <code>BROWSE_CHUNK_MAX_LENGTH</code> 截断，否则 M5 撑爆上下文。</li>
+<li><strong>兜底</strong>：Tavily search 结果里本身带摘要（可选 <code>include_raw_content</code> 拿正文），被 403/超时干掉的 URL 可退回用它顶上，报告不至于因反爬缺料。</li>
 </ul>
 <p><span class="pit">验收</span>：给 5 个混合 URL（含 404、超慢站），15 秒内返回，失败的被静默过滤。</p>
 </div>
@@ -162,19 +164,19 @@
 <div class="milestone">
 <h3>M5：研究循环 <span class="tag">1-2 天 · 核心</span></h3>
 <pre><code>async def conduct_research(query) -&gt; list[str]:
-    initial = retriever.search(query)
+    initial = await retriever.search(query)
     sub_queries = await plan_sub_queries(query, initial)   # 含原 query 本身
     contexts = await asyncio.gather(*[process(sq) for sq in sub_queries])
     return flatten(contexts)
 
 async def process(sub_query):
-    results = retriever.search(sub_query)
+    results = await retriever.search(sub_query)
     new_urls = self._dedupe(results)          # 全局 visited_urls 去重
     pages = await scrape_urls(new_urls)
     return await compress(sub_query, pages)</code></pre>
 <ul>
 <li><strong>参考</strong>（逐行对照读）：<code>skills/researcher.py:95</code>（conduct_research）、<code>:311</code>（_get_context_by_web_search，asyncio.gather 并发）、<code>:519</code>（_process_sub_query）、<code>:851</code>（_get_new_urls 去重）、<code>:930</code>（_scrape_data_by_urls）；子查询生成 <code>query_processing.py:37</code> 和 <code>:112</code>（把初搜结果塞进 prompt，值得保留）</li>
-<li><span class="pit">坑 8</span>：<code>visited_urls</code> 集合被并发协程读写。单线程 event loop 下 set 安全，但"检查+添加"要在同一同步块完成，别 await 穿插。</li>
+<li><span class="pit">坑 8</span>：<code>visited_urls</code> 集合被并发协程读写。单线程 event loop 下 set 安全，但"检查+添加"要在同一同步块完成，别 await 穿插。另外它要放在编排类<strong>实例</strong>上而非模块级全局——M8 一个进程跑多次研究时全局集合会串。</li>
 <li><span class="pit">坑 9</span>：某子查询整体失败时返回空列表继续，别抛异常终止全局。</li>
 <li>用 <code>on_event: Callable</code> 回调贯穿全流程（比原项目一路透传 websocket 更干净），M8 换成 WebSocket 推送。</li>
 </ul>
@@ -183,22 +185,25 @@ async def process(sub_query):
 
 <div class="milestone">
 <h3>M6：上下文压缩 <span class="tag">1 天 · 可先丐版</span></h3>
+<blockquote><strong>推荐顺序</strong>：M5 完成后先用丐版直通 M7，端到端跑出第一份报告（尽早暴露超时/超限/编码等全链路问题），再回头做正式版压缩。</blockquote>
 <p>网页切 chunk → 算 embedding → 只保留与 sub_query 余弦相似度 &gt; 0.42 的 chunk，取 top-k。</p>
 <ul>
 <li><strong>丐版（先跑通）</strong>：每页截前 N 字符，总量控制在 SMART_LLM 上下文的 60%。</li>
 <li><strong>正式版</strong>：<code>llm.py</code> 加 <code>embed(texts)</code>，<code>context.py</code> 切 chunk（1000 字符 + 100 重叠）、算余弦、过阈值排序取 top。numpy 甚至纯 Python 足够，不需要向量库。</li>
 <li><strong>参考</strong>：<code>context/compression.py</code>、<code>skills/context_manager.py:36</code>、<code>memory/embeddings.py</code></li>
-<li><span class="pit">坑 10（选型相关）</span>：<strong>DeepSeek 没有 embedding 端点</strong>，Qwen/智谱/SiliconFlow 有。写码前确认提供商；没有就：另配 embedding base_url / 用 LLM 摘要代替 / 永久停丐版。config 里把 embedding 的 base_url/key 与 chat 分开配置。</li>
+<li><span class="pit">坑 10（选型相关）</span>：<strong>DeepSeek 没有 embedding 端点</strong>，Qwen/智谱/SiliconFlow 有。<strong>已确认：embedding 走阿里百炼（DashScope 兼容模式，text-embedding-v3）</strong>，config 里 embedding 的 base_url/key 已与 chat 分开配置。</li>
+<li><span class="pit">坑 10b</span>：embedding 请求有单批条数上限（DashScope text-embedding-v3 一批 ≤ 10 条），而一次研究可能切出几百个 chunk——<code>embed(texts)</code> 必须分批循环调用。</li>
 </ul>
 <p><span class="pit">验收</span>：压缩后 context 降到原来 10-30%，保留段落确实与子查询相关。</p>
 </div>
 
 <div class="milestone">
 <h3>M7：报告生成 + CLI <span class="tag">1 天 · 首个可用版</span></h3>
-<p><code>writer.py</code>：context 拼进 <code>report_prompt</code>，SMART_LLM 流式生成，<code>on_chunk</code> 逐字打印。<code>agent.py</code>：<code>MiniResearcher</code> 串起 M2-M7，公开 <code>conduct_research()</code> 和 <code>write_report()</code>。<code>cli.py</code>：argparse 收 query，存 <code>outputs/{时间戳}.md</code>。</p>
+<p><code>writer.py</code>：context 拼进 <code>report_prompt</code>，SMART_LLM 流式生成，<code>on_chunk</code> 逐字打印。<code>agent.py</code>：<code>MiniResearcher</code> 串起 M2-M7，公开 <code>conduct_research()</code> 和 <code>write_report()</code>。<code>cli.py</code>：argparse 收 query，存 <code>outputs/{时间戳}.md</code>（<code>outputs/</code> 记得进 .gitignore）。</p>
 <ul>
 <li><strong>参考</strong>：<code>report_generation.py:219</code>（generate_report，超长 context 截断兜底）、<code>skills/writer.py:49</code>、根目录 <code>cli.py</code> / <code>main.py</code></li>
 <li><span class="pit">坑 11</span>：context 拼接后仍可能超限，抄"超限就砍 context 重试"的兜底。</li>
+<li><span class="pit">坑 11b（Windows 专属）</span>：GBK 控制台流式打印中文报告会抛 <code>UnicodeEncodeError</code>，cli.py 开头加 <code>sys.stdout.reconfigure(encoding="utf-8")</code>。</li>
 </ul>
 <p><span class="pit">里程碑验收</span>：<code>python cli.py "2025年固态电池商业化进展"</code> 3-5 分钟产出 1000+ 字、带 URL 引用的中文 Markdown 报告。到这里核心复刻完成。</p>
 </div>

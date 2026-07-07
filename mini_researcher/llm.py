@@ -1,5 +1,7 @@
-"""
-本模块提供一系列工具函数，通过统一接口与各种 LLM 提供方进行交互。
+"""LLM 轻量层：封装 OpenAI 兼容接口的 chat / chat_json。
+
+对应原项目 gpt_researcher/utils/llm.py + llm_provider/generic/base.py，
+但去掉 langchain，直接用 openai SDK。
 """
 
 import os
@@ -11,8 +13,32 @@ from mini_researcher.config import Config
 
 _client: AsyncOpenAI | None = None
 
+# ---- 简单的 token 成本追踪（累加每次调用的 usage，跨调用全局累计） ----
+_total_prompt_tokens = 0 # 累计的 prompt 用量
+_total_completion_tokens = 0 # 累计的 completion 用量
+
+def get_token_usage() -> dict[str, int]:
+    """返回自进程启动以来累计的 token 用量。"""
+    return {
+        "prompt_tokens": _total_prompt_tokens,
+        "completion_tokens": _total_completion_tokens,
+        "total_tokens": _total_prompt_tokens + _total_completion_tokens,
+    }
+
+def _record_usage(usage) -> None:
+    global _total_prompt_tokens, _total_completion_tokens
+    if usage is None:
+        return 
+    _total_prompt_tokens += getattr(usage, "prompt_tokens", 0) or 0
+    _total_completion_tokens += getattr(usage, "completion_tokens", 0) or 0
 
 def _get_client() -> AsyncOpenAI:
+    """lazy 单例：首次调用时从 Config 读 key/base_url 构造客户端。
+
+    放在函数里而不是模块顶层，是为了让 import 此模块不触发网络配置，
+    且测试时可以用 monkeypatch 替换 _client。
+    """
+    
     global _client
     if _client is None:
         cfg = Config.from_env()

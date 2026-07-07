@@ -5,6 +5,7 @@
 """
 
 from .config import Config
+from .llm import chat, chat_json, get_token_usage
 
-__all__ = ["Config"]
+__all__ = ["Config", "chat", "chat_json", "get_token_usage"]
 __version__ = "0.1.0"

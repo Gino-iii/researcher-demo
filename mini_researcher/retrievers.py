@@ -1,5 +1,4 @@
 """检索器层。
-
 对应原项目 gpt_researcher/retrievers/tavily/tavily_search.py，但做两处关键改造：
 
 1. 全程 async —— 原项目用同步 requests（tavily_search.py:89），在 event loop 里会阻塞，
@@ -151,7 +150,7 @@ class TavilyRetriever(BaseRetriever):
         payload = {
             "api_key": self.config.tavily_api_key,
             "query": query,
-            "search_depth": "basic",   # basic 一次算 1 credit,advanced 算 2
+            "search_depth": "basic",  # basic 一次算 1 credit,advanced 算 2
             "topic": "general",
             "max_results": max_results,
             "include_answer": False,

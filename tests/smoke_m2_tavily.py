@@ -12,7 +12,7 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from mini_researcher.config import Config
-from mini_researcher.retrievers_copy import TavilyRetriever
+from mini_researcher.retrievers import TavilyRetriever
 
 
 async def main() -> None:
